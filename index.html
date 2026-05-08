@@ -923,29 +923,65 @@ downloadBtn.addEventListener('click', async () => {
   downloadBtn.textContent = oldText;
 });
 
-// ═══ Copy to clipboard ═══
+// ═══ Copy / Share ═══
+// Tries 3 paths in order:
+//   1. Clipboard API with lazy-blob (preserves iOS Safari gesture)
+//   2. Web Share API (opens iOS share sheet → save to Photos / send to any app)
+//   3. Download fallback
 const copyBtn = document.getElementById('copyBtn');
 copyBtn.addEventListener('click', async () => {
   copyBtn.disabled = true;
   const oldText = copyBtn.textContent;
-  copyBtn.textContent = '⏳ Copying…';
+  copyBtn.textContent = '⏳';
 
-  try {
-    if (!navigator.clipboard || !window.ClipboardItem) {
-      throw new Error('Clipboard API not supported in this browser. Use Download instead.');
-    }
+  const card = document.getElementById('card');
+  const isStory = card.dataset.format === 'story';
+  const filename = buildFilename(isStory);
+
+  // Lazy-blob: kicks off the render but we don't await yet —
+  // iOS clipboard accepts a Promise<Blob> as ClipboardItem value.
+  const blobPromise = (async () => {
     const { canvas } = await captureCard();
-    const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error('blob failed')), 'image/png');
+    });
+  })();
 
-    copyBtn.textContent = '✓ Copied!';
+  const finish = (label) => {
+    copyBtn.textContent = label;
     setTimeout(() => { copyBtn.textContent = oldText; copyBtn.disabled = false; }, 1800);
-    return;
-  } catch (err) {
-    alert('Copy failed: ' + err.message);
-    copyBtn.textContent = oldText;
+  };
+
+  // 1. Try clipboard (best UX on desktop)
+  if (navigator.clipboard && window.ClipboardItem) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blobPromise })]);
+      return finish('✓ Copied!');
+    } catch (e) { /* fall through */ }
   }
-  copyBtn.disabled = false;
+
+  // 2. Try Web Share API (best on iOS)
+  try {
+    const blob = await blobPromise;
+    const file = new File([blob], filename, { type: 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'HuVa Cohort 01' });
+      return finish('✓ Shared!');
+    }
+    // 3. Fallback: trigger download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    return finish('⬇ Saved');
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      alert('Failed: ' + err.message + '\n\nTry the Download button instead.');
+    }
+    copyBtn.textContent = oldText;
+    copyBtn.disabled = false;
+  }
 });
 
 // ═══ Quick share ═══
